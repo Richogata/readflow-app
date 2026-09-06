@@ -394,6 +394,7 @@ export default function ReaderClient() {
                   onIndexChange={setAudioIndex}
                   onPlayingChange={setPlaying}
                   onEnd={handleReaderEnd}
+                  onSeek={(i) => { setAudioIndex(i); setSeekNonce((n) => n + 1); }}
                 />
               ) : (
                 <p className="text-ink-faint text-sm text-center py-10">La lecture audio n&apos;est pas disponible sur ce navigateur.</p>

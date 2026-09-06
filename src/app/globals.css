@@ -1,12 +1,18 @@
 @import "tailwindcss";
 
+/* The app toggles a .dark class on <html> (settings + reader), so the
+   dark: variant must follow that class instead of the OS preference.
+   Otherwise dark: utilities respond to prefers-color-scheme and can
+   force white text in reading sessions while the app theme is light. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-paper: #F6F1E7;
   --color-paper-dim: #EDE6D6;
   --color-paper-deep: #E3D9C3;
-  --color-ink: #20242B;
-  --color-ink-soft: #20242B;
-  --color-ink-faint: #20242B;
+  --color-ink: #000000;
+  --color-ink-soft: #000000;
+  --color-ink-faint: #000000;
   --color-ember: #C0673C;
   --color-ember-light: #DE9464;
   --color-ember-dark: #8F4726;
@@ -63,7 +69,7 @@ html.dark body {
   color: var(--color-paper);
 }
 /* Dark mode: all text uniformly white */
-html.dark { --color-ink-soft: #F6F1E7; --color-ink-faint: #F6F1E7; }
+html.dark { --color-paper: #FFFFFF; --color-ink-soft: #FFFFFF; --color-ink-faint: #FFFFFF; }
 
 .grain {
   pointer-events: none;

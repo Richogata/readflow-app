@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import WordHighlighter from './WordHighlighter';
 import { findVoice, getVoices, isSpeechSupported, warmUpSpeech } from '@/lib/speech';
 
@@ -10,7 +10,7 @@ import { findVoice, getVoices, isSpeechSupported, warmUpSpeech } from '@/lib/spe
 const MAX_CHUNK = 220;
 
 export default function AudioReader({
-  words, playing, rate, voiceURI, textSize, startIndex = 0, seekNonce = 0, onIndexChange, onPlayingChange, onEnd, onUnsupported,
+  words, playing, rate, voiceURI, textSize, startIndex = 0, seekNonce = 0, onIndexChange, onPlayingChange, onEnd, onUnsupported, onSeek,
 }: {
   words: string[];
   playing: boolean;
@@ -25,15 +25,22 @@ export default function AudioReader({
   onPlayingChange?: (playing: boolean) => void;
   onEnd?: () => void;
   onUnsupported?: () => void;
+  onSeek?: (wordIndex: number) => void;
 }) {
   const [index, setIndex] = useState(startIndex);
   const [prevStartIndex, setPrevStartIndex] = useState(startIndex);
+  const [fraction, setFraction] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  const [pace, setPace] = useState<number | null>(null);
 
   // All mutable state lives in a ref so the speech effect never re-runs on
   // unrelated re-renders (callback identities change constantly).
   const stateRef = useRef({
     index, playing, rate, voiceURI, words, startIndex,
-    onIndexChange, onPlayingChange, onEnd, onUnsupported,
+    onIndexChange, onPlayingChange, onEnd, onUnsupported, onSeek,
+    fraction, setFraction,
+    elapsed, setElapsed,
+    pace, setPace,
   });
 
   // Keep the ref in sync with latest props/state after every commit.
@@ -41,18 +48,34 @@ export default function AudioReader({
   useEffect(() => {
     stateRef.current = {
       index, playing, rate, voiceURI, words, startIndex,
-      onIndexChange, onPlayingChange, onEnd, onUnsupported,
+      onIndexChange, onPlayingChange, onEnd, onUnsupported, onSeek,
+      fraction, setFraction,
+      elapsed, setElapsed,
+      pace, setPace,
     };
   });
 
   // Parent-driven seeks (skip buttons) must move the highlight immediately,
-  // even while paused. Render-time adjustment is the supported pattern for
-  // "reset state when a prop changes". Echoed updates from onboundary are
-  // no-ops (startIndex already equals the internal index then).
+  // even while paused. Reset the progress readout when a top-level prop
+  // like startIndex changes, so a skip restart does not inherit stale
+  // elapsed/pace from a previous run.
+  const [overlayX, setOverlayX] = useState<number | null>(null);
+
   if (startIndex !== prevStartIndex) {
     setPrevStartIndex(startIndex);
     setIndex(startIndex);
+    setFraction(startIndex / Math.max(1, words.length - 1));
+    setElapsed(0);
+    setPace(null);
+    setOverlayX(null);
   }
+
+  const seekToFractionLocal = useCallback((f: number) => {
+    const i = Math.max(0, Math.min(words.length - 1, Math.round(f * (words.length - 1))));
+    const s = stateRef.current;
+    s.onSeek?.(i);
+    s.onIndexChange?.(i);
+  }, [words.length]);
 
   const generationRef = useRef(0);
   const chunksRef = useRef<string[]>([]);
@@ -62,6 +85,8 @@ export default function AudioReader({
   const startTimerRef = useRef<number | null>(null);
   const chainTimerRef = useRef<number | null>(null);
   const lastSpeakAtRef = useRef(0);
+  const startTimeRef = useRef<number>(0);
+  const lastPercentAtRef = useRef<number>(0);
 
   // ── Speech lifecycle ──────────────────────────────────────
   // Re-runs only when playing / rate / voiceURI / seekNonce change. Every
@@ -84,8 +109,25 @@ export default function AudioReader({
       if (chainTimerRef.current !== null) { clearTimeout(chainTimerRef.current); chainTimerRef.current = null; }
     };
 
+    // tick elapsed + pace every second while playing
+    // tick elapsed + pace every second while playing
+    const tickTimer = window.setInterval(() => {
+      if (gen !== generationRef.current) return;
+      if (!stateRef.current.playing) return;
+      const now = Date.now();
+      stateRef.current.setElapsed(now - startTimeRef.current);
+      if (now - lastPercentAtRef.current < 600) return;
+      lastPercentAtRef.current = now;
+      const frac = stateRef.current.index / Math.max(1, stateRef.current.words.length - 1);
+      stateRef.current.setFraction(frac);
+      const seconds = Math.max(1, (now - startTimeRef.current) / 1000);
+      const wordsPh = ((stateRef.current.index - startIndex) / seconds) * 60;
+      stateRef.current.setPace(wordsPh > 0 ? Math.round(wordsPh) : null);
+    }, 1000);
+
     // ── STOP ─────────────────────────────────────────────
     if (!s.playing) {
+      clearInterval(tickTimer);
       if (synth.speaking || synth.pending) synth.cancel();
       return;
     }
@@ -97,7 +139,17 @@ export default function AudioReader({
     }
 
     // ── START (from startIndex — where the highlight is) ─
-    if (s.words.length === 0) return;
+    if (s.words.length === 0) {
+      clearInterval(tickTimer);
+      return;
+    }
+
+    // Chrome drops speak() called right after cancel() — even from a
+    // microtask. Defer the first chunk with a real macrotask, and call
+    // warmUpSpeech() to force engine init on the very first play. If the
+    // warm-up is still in the queue when the timer fires, flush it first
+    // and give Chrome another beat before speaking.
+    warmUpSpeech();
 
     const findWordIndex = (charIndex: number) => {
       const offsets = offsetsRef.current;
@@ -244,6 +296,7 @@ export default function AudioReader({
       // gen check of any live or future run.
       generationRef.current = gen + 1;
       clearInterval(watchdog);
+      clearInterval(tickTimer);
       clearTimers();
       if (synth.speaking || synth.pending) synth.cancel();
     };
@@ -270,5 +323,78 @@ export default function AudioReader({
     if (isSpeechSupported()) window.speechSynthesis.cancel();
   }, []);
 
-  return <WordHighlighter words={words} index={index} textSize={textSize} />;
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  return (
+    <div>
+      {words.length > 0 && (
+        <div className="flex items-center gap-3 px-5 py-1.5 rounded-lg text-[11px] font-mono tabular-nums"
+          style={{ background: 'rgba(255,255,255,0.04)', color: '#a0aec0' }}>
+          <span className="flex items-center gap-1.5 min-w-0 truncate">
+            <span className="shrink-0 h-1.5 w-1.5 rounded-full bg-emerald-400/90" />
+            <span className="truncate">
+              {stateRef.current.words[stateRef.current.index]?.slice(0, 40) || ''}
+            </span>
+          </span>
+          <span className="text-[10px] text-emerald-400/80 shrink-0">
+            {Math.round(fraction * 100)}%
+          </span>
+          <div className="flex-1 min-w-[80px] h-1 rounded-full bg-white/10 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-emerald-400/70 to-amber-400/70 transition-[width] duration-150"
+              style={{ width: `${fraction * 100}%` }}
+            />
+          </div>
+          <span className="shrink-0 text-[10px] text-white/60">
+            {elapsed < 60000
+              ? `${Math.round(elapsed / 60000 * 100) / 100}m ${Math.round((elapsed % 60000) / 1000)}s`
+              : `${Math.round(elapsed / 60000)}mn`}
+            {pace != null && ` · ${pace}w/min`}
+          </span>
+        </div>
+      )}
+      <WordHighlighter words={words} index={index} textSize={textSize} />
+
+      {/* Scrub strip: click or keyboard to seek inside audio mode. */}
+      {words.length > 1 && (
+        <div
+          ref={(t) => { if (t) trackRef.current = t; }}
+          role="slider"
+          aria-label="Progression de la lecture audio"
+          aria-valuemin={0}
+          aria-valuemax={words.length - 1}
+          aria-valuenow={index}
+          tabIndex={0}
+          onKeyDown={(e) => {
+            const steps = words.length - 1;
+            if (e.key === 'ArrowLeft') { e.preventDefault(); seekToFractionLocal(Math.max(0, index / steps - 0.01)); }
+            else if (e.key === 'ArrowRight') { e.preventDefault(); seekToFractionLocal(Math.min(1, (index + 1) / steps)); }
+            else if (e.key === 'Home') { e.preventDefault(); seekToFractionLocal(0); }
+            else if (e.key === 'End') { e.preventDefault(); seekToFractionLocal(1); }
+          }}
+          onPointerDown={(e) => {
+            if (!trackRef.current) return;
+            const rect = trackRef.current.getBoundingClientRect();
+            const f = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            seekToFractionLocal(f);
+            const overlayPx = f * rect.width;
+            setOverlayX(overlayPx);
+          }}
+        >
+          <div className="mt-2 h-1 w-full rounded-full bg-white/10 outline-none focus-visible:ring-2 focus-visible:ring-amber-400/70">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-emerald-400/70 to-amber-400/70 transition-[width] duration-150"
+              style={{ width: `${fraction * 100}%` }}
+            />
+            {overlayX != null && (
+              <div
+                className="absolute top-0 h-full w-0.5 bg-white/90 shadow transition-[left,opacity] duration-150"
+                style={{ left: `${overlayX}px`, opacity: 0.9 }}
+              />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
