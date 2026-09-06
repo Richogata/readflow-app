@@ -20,6 +20,16 @@ export default function FocusReader({
   onEnd?: () => void;
 }) {
   const [index, setIndex] = useState(startIndex);
+  const [prevStartIndex, setPrevStartIndex] = useState(startIndex);
+
+  // Parent-driven seeks (skip buttons) move the highlight even while
+  // paused. Render-time adjustment is the supported pattern for "reset
+  // state when a prop changes". Echoed onIndexChange updates are no-ops
+  // (startIndex already equals the internal index then).
+  if (startIndex !== prevStartIndex) {
+    setPrevStartIndex(startIndex);
+    setIndex(startIndex);
+  }
 
   useEffect(() => {
     if (!playing) return undefined;

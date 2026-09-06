@@ -60,6 +60,9 @@ export default function ReaderClient() {
   const [voiceURI, setVoiceURI] = useState<string | null>(null);
   const [focusIndex, setFocusIndex] = useState(0);
   const [audioIndex, setAudioIndex] = useState(0);
+  // Bumped on every audio seek (skip buttons) so AudioReader restarts
+  // speech from the new position even while it keeps playing.
+  const [seekNonce, setSeekNonce] = useState(0);
   const [reachedEnd, setReachedEnd] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [finished, setFinished] = useState(false);
@@ -232,22 +235,22 @@ export default function ReaderClient() {
     setVoiceURI(uri);
     saveSettings({ ...getSettings(), voiceURI: uri });
     setShowVoicePicker(false);
-    // Restart speech with the new voice if currently playing.
-    if (playing && isSpeechSupported()) {
-      window.speechSynthesis.cancel();
-      setPlaying(false);
-    }
+    // If playing, AudioReader restarts seamlessly from the current word
+    // (its effect re-runs on voiceURI) — no need to stop playback.
   };
 
   const selectSpeed = (idx: number) => {
     setSpeedIdx(idx);
     saveSettings({ ...getSettings(), defaultSpeed: SPEEDS[idx] });
     setShowSpeedPicker(false);
-    // Restart speech at new speed if currently playing.
-    if (playing && isSpeechSupported()) {
-      window.speechSynthesis.cancel();
-      setPlaying(false);
-    }
+    // Same as above: rate changes restart speech from the current word.
+  };
+
+  /** Skip ±15 words in audio mode: move the highlight immediately and bump
+   * the seek nonce so speech restarts from the new position. */
+  const seekAudio = (delta: number) => {
+    setAudioIndex((i) => Math.min(words.length - 1, Math.max(0, i + delta)));
+    setSeekNonce((n) => n + 1);
   };
 
   const toggleTheme = () => {
@@ -316,7 +319,7 @@ export default function ReaderClient() {
         <button onClick={() => setMode('focus')} className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all ${mode === 'focus' ? 'bg-ember text-paper shadow-sm' : 'text-ink-soft hover:bg-ink/[0.06]'}`}>
           <Sparkles size={15} /> Focus
         </button>
-        <button onClick={() => setMode('audio')} className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all ${mode === 'audio' ? 'bg-moss text-paper shadow-sm' : 'text-ink-soft hover:bg-ink/[0.06]'}`}>
+        <button onClick={() => { setMode('audio'); setPlaying(true); }} className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all ${mode === 'audio' ? 'bg-moss text-paper shadow-sm' : 'text-ink-soft hover:bg-ink/[0.06]'}`}>
           <Headphones size={15} /> Audio
         </button>
       </div>
@@ -387,6 +390,7 @@ export default function ReaderClient() {
                   voiceURI={voiceURI}
                   textSize={textSize}
                   startIndex={audioIndex}
+                  seekNonce={seekNonce}
                   onIndexChange={setAudioIndex}
                   onPlayingChange={setPlaying}
                   onEnd={handleReaderEnd}
@@ -417,9 +421,9 @@ export default function ReaderClient() {
 
           {(mode === 'focus' || mode === 'audio') && (
             <div className="flex items-center gap-1">
-              <button onClick={() => (mode === 'focus' ? setFocusIndex((i) => Math.max(0, i - 15)) : setAudioIndex((i) => Math.max(0, i - 15)))} className="btn-ghost !px-2"><SkipBack size={16} /></button>
+              <button onClick={() => (mode === 'focus' ? setFocusIndex((i) => Math.max(0, i - 15)) : seekAudio(-15))} className="btn-ghost !px-2"><SkipBack size={16} /></button>
               <button onClick={() => setPlaying((p) => !p)} className="btn-primary !px-4 !py-2">{playing ? <Pause size={16} /> : <Play size={16} />}</button>
-              <button onClick={() => (mode === 'focus' ? setFocusIndex((i) => Math.min(words.length - 1, i + 15)) : setAudioIndex((i) => Math.min(words.length - 1, i + 15)))} className="btn-ghost !px-2"><SkipForward size={16} /></button>
+              <button onClick={() => (mode === 'focus' ? setFocusIndex((i) => Math.min(words.length - 1, i + 15)) : seekAudio(15))} className="btn-ghost !px-2"><SkipForward size={16} /></button>
 
               {/* Speed picker */}
               <div className="relative" ref={speedPickerRef}>

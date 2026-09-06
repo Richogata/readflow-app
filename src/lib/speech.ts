@@ -41,6 +41,27 @@ export function getVoices(): Promise<SpeechSynthesisVoice[]> {
   });
 }
 
+/**
+ * Force-initialise the TTS engine with a tiny, nearly-silent utterance.
+ * Chrome initialises speech synthesis lazily, and the very first real
+ * speak() can be silently dropped or clipped. Must use a pronounceable
+ * token (not whitespace): whitespace-only utterances never "end" on some
+ * engines and would wedge the utterance queue before real speech starts.
+ * volume 0 + rate 3 keeps it inaudible; the pause() right after keeps it
+ * from delaying the first real utterance on slow engines.
+ */
+export function warmUpSpeech(): void {
+  if (!isSpeechSupported()) return;
+  const synth = window.speechSynthesis;
+  if (synth.speaking || synth.pending) return;
+  try {
+    const warmup = new SpeechSynthesisUtterance('un');
+    warmup.volume = 0;
+    warmup.rate = 3;
+    synth.speak(warmup);
+  } catch { /* warm-up is best-effort */ }
+}
+
 /** French voices first (this app is French-first), then the rest, each group alphabetised by name. */
 export function sortVoicesForPicker(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice[] {
   return [...voices].sort((a, b) => {
